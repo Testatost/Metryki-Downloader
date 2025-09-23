@@ -1,7 +1,7 @@
 # MetrykiDownloader
 A Downloader for Books and Pictures from Metryki.
 
-![alt text](https://github.com/Umzagie/MetrykiDownloader/blob/main/MetrykiDownloader.png?raw=true)
+![alt text](https://github.com/Tetsatost/Metryki-Downloader/blob/main/MetrykiDownloader.png?raw=true)
 
 
 
@@ -131,3 +131,7 @@ A Downloader for Books and Pictures from Metryki.
 • Przyciski „Pobierz”, „Stop”, „Reset”.
 • Podwójny klik otwiera URL książki w przeglądarce.
 • Pasek postępu pokazuje postęp dla wszystkich książek.
+
+--------------------------------------------------------------------------------------------
+
+Disclaimer: This code as made with ChatGPT 5.
