@@ -1,7 +1,7 @@
 # MetrykiDownloader
 A Downloader for Books and Pictures from Metryki.
 
-![alt text](https://github.com/Testatost/Metryki-Downloader/blob/main/MetrykiDownloader.png?raw=true)
+![alt text](https://github.com/Testatost/Metryki-Downloader/blob/main/Metryki%20Downloader.png?raw=true)
 
 
 
