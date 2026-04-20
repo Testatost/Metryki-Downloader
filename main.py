@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import QApplication, QStyleFactory
 from metrykidownloader.app_constants import APP_DISPLAY_NAME, APP_FONT
 from metrykidownloader.main_window import MainWindow
 
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_DISPLAY_NAME)
