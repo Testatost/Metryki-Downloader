@@ -1,137 +1,136 @@
-# MetrykiDownloader
-A Downloader for Books and Pictures from Metryki.
+# Metryki Downloader
 
-![alt text](https://github.com/Testatost/Metryki-Downloader/blob/main/Metryki%20Downloader.png?raw=true)
+<p align="center">
+  <img src="logo.png" alt="Metryki Downloader Logo" width="260"> <br>
+</p>
 
+Metryki Downloader is a desktop application for downloading scans from **metryki.genealodzy.pl**.
 
+The current source code is based on **PyQt6** and is organized as a modular package in `metrykidownloader/`.
 
-🇩🇪 Deutsch
-🔑 Hauptaufgabe
+![Screenshot](splash.png)
 
-• Du kannst URLs von Büchern, Karten oder Dokumenten von metryki.genealodzy.pl eingeben.
-• Das Programm sucht in der Seite nach IIP-Bildserver-Links (das sind die hochauflösenden Scans).
-• Es baut daraus direkte Download-Links zu JPEG-Bildern.
-• Diese Bilder werden als Einzelseiten (page_0001.jpg, page_0002.jpg, …) in einen Zielordner heruntergeladen.
-• Mehrere Bücher können in eine Warteliste gelegt und nacheinander heruntergeladen werden.
+## Overview
 
-🛠️ Funktionen
-1. Sprachen
+The application can:
 
-• Oberfläche in Deutsch 🇩🇪, Englisch 🇬🇧 und Polnisch 🇵🇱 umschaltbar.
+- open URLs from `metryki.genealodzy.pl`
+- detect scan/image links on the page
+- generate direct JPEG download links
+- download all pages or selected page ranges
+- queue multiple entries in a waiting list
+- save and load waiting lists as JSON
+- export downloaded JPG folders to PDF
+- show a live log and save the log manually to a text file
+- switch between German, English, and Polish
+- remember the selected language and theme
 
-2. Buchverwaltung
+## Requirements
 
-• URL + Zielordner + gewünschte Seiten angeben.
-• Seiten können z. B. als 1,5,8-10 spezifiziert werden, leer = alle.
-• Bücher können hinzugefügt, gelöscht oder die Seitenbereiche geändert werden.
-• Wartelisten lassen sich als JSON speichern und wieder laden.
+- Python 3.10+
+- PyQt6
+- requests
+- selenium
+- webdriver-manager
+- Pillow
 
-3. Download
+## Installation
 
-• Bilder werden seitenweise geladen.
-• Fortschritt je Buch (✅, ⚠️, ❌) und Gesamtfortschritt in einer Fortschrittsleiste angezeigt.
-• Abbruch (Stop-Button) jederzeit möglich.
-• Wiederaufnahme über gespeicherte Warteliste.
+### Windows / PyCharm / virtual environment
 
-4. Logging
+```bash
+python -m pip install --upgrade pip
+pip install PyQt6 requests selenium webdriver-manager Pillow
+```
 
-• Meldungen (z. B. „Buch hinzugefügt“, „Download gestartet“) werden im Logbereich angezeigt.
-• Optional werden die Logs in einer Datei download_log.txt im Zielordner gespeichert.
-• Logfenster kann ein-/ausgeblendet werden.
+### Linux Mint / Ubuntu
 
-5. GUI-Details (Tkinter)
+```bash
+sudo apt update
+sudo apt install python3-pip
+python3 -m pip install --upgrade pip
+pip install PyQt6 requests selenium webdriver-manager Pillow
+```
 
-• Tabellenansicht der Warteliste mit URL, Seiten, Status.
-• Buttons für „Download starten“, „Stoppen“, „Reset“.
-• Kontextfunktionen wie Doppelklick → Buch-URL im Browser öffnen.
-• Fortschrittsbalken für alle Bücher.
+## Usage
 
----------------------------------------------------------------------------------------------------
+1. Start the program.
+2. Enter a Metryki URL.
+3. Choose the target directory.
+4. Optionally enter page ranges such as `1,5,8-10`.
+5. Add one or more entries to the waiting list.
+6. Start the download.
 
-🇬🇧 English
-🔑 Main Purpose
+## Main features
 
-• You can enter URLs of books, maps, or documents from metryki.genealodzy.pl.
-• The program scans the page for IIP image server links (these point to the high-resolution scans).
-• It then builds direct JPEG download links.
-• These images are saved as individual pages (page_0001.jpg, page_0002.jpg, …) in a chosen folder.
-• Multiple books can be added to a waiting list and downloaded one after another.
+### Download queue
 
-🛠️ Features
-1. Languages
+- multiple books, maps, or documents can be added to a waiting list
+- entries can be deleted again
+- page ranges can be changed later
+- double-click on a row opens the original URL in the browser
 
-• Interface available in German 🇩🇪, English 🇬🇧, and Polish 🇵🇱.
+### Download logic
 
-2. Book management
+- the application searches the page for image/IIP-related links
+- direct JPEG download URLs are generated automatically
+- pages are downloaded one by one
+- the overall progress is shown in a progress bar
+- each queue item gets a status symbol: `⏳`, `✅`, `⚠️`, `❌`
 
-• Enter URL + target folder + desired pages.
-• Pages can be specified like 1,5,8-10; empty = all pages.
-• Books can be added, deleted, or edited (pages).
-• Waiting lists can be saved as JSON and loaded later.
+### Folder naming
 
-3. Download
+The current code creates folders based on extracted metadata and groups downloads into a readable structure.
 
-• Downloads images page by page.
-• Shows per-book status (✅, ⚠️, ❌) and overall progress bar.
-• Can be stopped anytime.
-• Downloads can be resumed from saved waiting lists.
+```text
+Target folder/
+└── Place/
+    └── TypeDE - TypePL - TypeEN (Years)/
+        ├── TypeDE - TypePL - TypeEN_001.jpg
+        ├── TypeDE - TypePL - TypeEN_002.jpg
+        └── TypeDE - TypePL - TypeEN (Years).pdf
+```
 
-4. Logging
+### PDF export
 
-• Messages (e.g., “Book added”, “Download started”) appear in the log window.
-• Optionally saved to download_log.txt in the target folder.
-• Log window can be shown/hidden.
+Downloaded JPG files can be converted into a PDF per folder.
 
-5. GUI details (Tkinter)
+### Logging
 
-• Table view of waiting list with URL, pages, and status.
-• Buttons for “Download”, “Stop”, “Reset”.
-• Double-click opens the book’s URL in browser.
-• Global progress bar for all books.
+- messages are shown in the log window inside the application
+- the log can be shown or hidden
+- the log can be saved manually to a chosen `.txt` file
 
----------------------------------------------------------------------------------------------------
+### Interface
 
-🇵🇱 Polski
-🔑 Główne zadanie
+- available languages: German, English, Polish
+- selected language is stored with `QSettings`
+- dark mode / light mode is available
+- selected theme is stored with `QSettings`
 
-• Możesz wprowadzić adresy URL książek, map lub dokumentów z metryki.genealodzy.pl.
-• Program wyszukuje na stronie linki do serwera obrazów IIP (to są skany w wysokiej rozdzielczości).
-• Tworzy z nich bezpośrednie linki do pobrania plików JPEG.
-• Obrazy są zapisywane jako pojedyncze strony (page_0001.jpg, page_0002.jpg, …) w wybranym folderze.
-• Wiele książek można dodać do listy oczekujących i pobierać je kolejno.
+## Source code structure
 
-🛠️ Funkcje
-1. Języki
+The source code is split into modules inside `metrykidownloader/`.
 
-• Interfejs dostępny w języku niemieckim 🇩🇪, angielskim 🇬🇧 i polskim 🇵🇱.
+### Module summary
 
-2. Zarządzanie książkami
+- `main.py` – application entry point
+- `app_constants.py` – application name, settings keys, default headers, paths
+- `i18n.py` – UI texts for all supported languages
+- `main_window.py` – full GUI and user interactions
+- `metadata_parser.py` – metadata extraction for Metryki pages
+- `models.py` – data models such as `BookEntry`
+- `network.py` – HTTP requests and binary download helpers
+- `styles.py` – light and dark Qt stylesheets
+- `text_utils.py` – helper functions for text and URL processing
+- `worker.py` – threaded downloader logic
 
-• Wprowadź URL + folder docelowy + żądane strony.
-• Strony można określić np. 1,5,8-10; puste = wszystkie.
-• Książki można dodawać, usuwać lub edytować zakres stron.
-• Listy oczekujących można zapisać w formacie JSON i później wczytać.
+## Notes
 
-3. Pobieranie
+- Page ranges can be entered in formats such as `1,2,5-9`.
+- Waiting lists are stored as `.json`.
+- The application uses Selenium to resolve scan pages and image links dynamically.
 
-• Obrazy pobierane są strona po stronie.
-• Pokazuje status każdej książki (✅, ⚠️, ❌) oraz pasek postępu całości.
-• Pobieranie można zatrzymać w dowolnym momencie.
-• Możliwe jest wznowienie pobierania z zapisanej listy oczekujących.
+## Disclaimer
 
-4. Logowanie
-
-• Komunikaty (np. „Książka dodana”, „Pobieranie rozpoczęte”) wyświetlane są w oknie logów.
-• Opcjonalnie zapisywane do pliku download_log.txt w folderze docelowym.
-• Okno logów można pokazywać lub ukrywać.
-
-5. Szczegóły GUI
-
-• Widok tabeli listy oczekujących z kolumnami: URL, strony, status.
-• Przyciski „Pobierz”, „Stop”, „Reset”.
-• Podwójny klik otwiera URL książki w przeglądarce.
-• Pasek postępu pokazuje postęp dla wszystkich książek.
-
---------------------------------------------------------------------------------------------
-
-Disclaimer: This code as made with ChatGPT 5.
+This project was created with support from ChatGPT 5.
