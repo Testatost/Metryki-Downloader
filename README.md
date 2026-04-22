@@ -1,4 +1,4 @@
-![Screenshot](splash.png)
+![Screenshot](banner.png)
 
 Metryki Downloader is a desktop application for downloading scans from **metryki.genealodzy.pl**.
 
