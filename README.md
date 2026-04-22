@@ -1,14 +1,8 @@
-# Metryki Downloader
-
-<p align="center">
-  <img src="logo.png" alt="Metryki Downloader Logo" width="260"> <br>
-</p>
+![Screenshot](splash.png)
 
 Metryki Downloader is a desktop application for downloading scans from **metryki.genealodzy.pl**.
 
 The current source code is based on **PyQt6** and is organized as a modular package in `metrykidownloader/`.
-
-![Screenshot](splash.png)
 
 ## Overview
 
