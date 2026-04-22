@@ -10,6 +10,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
 from metrykidownloader.app_constants import DEFAULT_HEADERS
+from metrykidownloader.i18n import LANG
 from metrykidownloader.metadata_parser import parse_metryki_metadata
 from metrykidownloader.models import BookEntry
 from metrykidownloader.network import download_binary
@@ -22,12 +23,17 @@ class DownloaderWorker(QThread):
     global_progress = pyqtSignal(float)
     finished_signal = pyqtSignal()
 
-    def __init__(self, books: list[BookEntry], parent=None):
+    def __init__(self, books: list[BookEntry], ui_lang: str = "de", parent=None):
         super().__init__(parent)
         self.books = books
+        self.ui_lang = ui_lang
         self._stop_requested = False
         self.session = requests.Session()
         self.session.headers.update(DEFAULT_HEADERS)
+
+    def _t(self, key: str) -> str:
+        lang = self.ui_lang if self.ui_lang in LANG else "de"
+        return LANG[lang].get(key, LANG.get("en", {}).get(key, LANG["de"].get(key, key)))
 
     def stop(self) -> None:
         self._stop_requested = True
@@ -135,14 +141,14 @@ class DownloaderWorker(QThread):
                 page_links = self._get_book_page_links(driver, book.url)
                 total += len(self.parse_pages(book.pages, len(page_links)))
             except Exception:
-                self.log(f"[!] Seitenzahl konnte nicht ermittelt werden: {book.url}")
+                self.log(self._t("worker_load_error").format(url=book.url, error="count failed"))
         return total
 
     def run(self) -> None:
         try:
             driver = self._create_driver()
         except Exception as exc:
-            self.log(f"[!] Browserfehler: {exc}")
+            self.log(f"[!] {self._t('worker_browser_error').format(error=exc)}")
             self.finished_signal.emit()
             return
 
@@ -153,25 +159,25 @@ class DownloaderWorker(QThread):
 
             for row, book in enumerate(self.books):
                 if self._stop_requested:
-                    self.log("[*] Abgebrochen.")
+                    self.log(self._t("worker_cancelled"))
                     self.book_status.emit(row, "❌")
                     break
 
                 try:
-                    self.log(f"[🌍] Öffne: {book.url}")
+                    self.log(f"[🌍] {self._t('worker_opening').format(url=book.url)}")
                     page_links = self._get_book_page_links(driver, book.url)
                     if not page_links:
-                        self.log(f"[!] Keine Seiten gefunden: {book.url}")
+                        self.log(self._t("worker_no_pages").format(url=book.url))
                         self.book_status.emit(row, "⚠️")
                         continue
 
                     metadata = self._extract_metadata(driver)
                     outdir = self._resolve_output_folder(book, metadata)
-                    self.log(f"[📂] Ordner: {outdir}")
+                    self.log(f"[📂] {self._t('worker_folder').format(path=outdir)}")
 
                     selected_page_numbers = self.parse_pages(book.pages, len(page_links))
                     if not selected_page_numbers:
-                        self.log(f"[!] Ungültige Seitenauswahl: {book.url} -> {book.pages}")
+                        self.log(f"[!] {self._t('worker_invalid_pages').format(url=book.url, pages=book.pages)}")
                         self.book_status.emit(row, "⚠️")
                         continue
 
@@ -188,7 +194,7 @@ class DownloaderWorker(QThread):
                         page_url = page_links[page_number - 1]
                         download_url = self._get_download_url(driver, page_url)
                         if not download_url:
-                            self.log(f"[!] Kein Bildlink für Seite {page_number}: {page_url}")
+                            self.log(f"[!] {self._t('worker_no_download_url').format(page=page_number, url=page_url)}")
                             errors += 1
                             continue
 
@@ -196,14 +202,14 @@ class DownloaderWorker(QThread):
                         filepath = os.path.join(outdir, filename)
 
                         try:
+                            self.log(f"[💾] {self._t('worker_downloading').format(name=filename, path=filepath)}")
                             download_binary(download_url, filepath, self.session)
                             files_done += 1
                             progress = (files_done / total_files) * 100 if total_files else 0
                             self.global_progress.emit(progress)
-                            self.log(f"[💾] Gespeichert: {filename}")
                         except Exception as exc:
                             errors += 1
-                            self.log(f"[!] Download-Fehler bei Seite {page_number}: {exc}")
+                            self.log(f"[!] {self._t('worker_download_error').format(page=page_number, error=exc)}")
 
                     if errors == 0:
                         self.book_status.emit(row, "✅")
@@ -213,7 +219,7 @@ class DownloaderWorker(QThread):
                         self.book_status.emit(row, "❌")
 
                 except Exception as exc:
-                    self.log(f"[!] Fehler bei {book.url}: {exc}")
+                    self.log(f"[!] {self._t('worker_load_error').format(url=book.url, error=exc)}")
                     self.book_status.emit(row, "❌")
 
         finally:
@@ -221,4 +227,5 @@ class DownloaderWorker(QThread):
                 driver.quit()
             except Exception:
                 pass
+            self.log(self._t("worker_all_done"))
             self.finished_signal.emit()

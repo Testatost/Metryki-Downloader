@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import html
 import json
 import os
 from datetime import datetime
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from PyQt6.QtCore import QSettings, Qt, QUrl, pyqtSlot
-from PyQt6.QtGui import QAction, QDesktopServices, QIcon
+from PyQt6.QtCore import QSettings, QStringListModel, Qt, QUrl, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QAction, QActionGroup, QDesktopServices, QKeySequence
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QCompleter,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGridLayout,
     QGroupBox,
@@ -16,54 +23,149 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
-    QRadioButton,
+    QSizePolicy,
     QStatusBar,
     QStyleFactory,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QButtonGroup,
 )
 
-from metrykidownloader.app_constants import APP_HOME_URL, ICON_PATH, SETTINGS_APP, SETTINGS_ORG
-from metrykidownloader.i18n import LANG
+from metrykidownloader.app_constants import (
+    APP_AUTHOR,
+    APP_DISPLAY_NAME,
+    APP_FONT,
+    APP_GITHUB_URL,
+    APP_HOME_URL,
+    APP_VERSION,
+    SETTINGS_APP,
+    SETTINGS_ORG,
+)
+from metrykidownloader.icons import get_app_icon, get_banner_pixmap
+from metrykidownloader.i18n import LANG, LANGUAGE_LABELS, SUPPORTED_LANGS
 from metrykidownloader.models import BookEntry
 from metrykidownloader.styles import dark_stylesheet, light_stylesheet
+from metrykidownloader.third_party import A4, HAVE_REPORTLAB, canvas
 from metrykidownloader.worker import DownloaderWorker
+
+
+class ShortcutLineEdit(QLineEdit):
+    ctrlReturnPressed = pyqtSignal()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.ctrlReturnPressed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class DownwardComboBox(QComboBox):
+    def showPopup(self) -> None:
+        super().showPopup()
+        popup = self.view().window()
+        if popup is not None:
+            popup.move(self.mapToGlobal(self.rect().bottomLeft()))
+
+
+class HelpDialog(QDialog):
+    def __init__(self, parent: QWidget | None, title: str, html_text: str):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowIcon(get_app_icon())
+        self.resize(720, 620)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        banner_label = QLabel()
+        banner_pixmap = get_banner_pixmap(680, 120)
+        if not banner_pixmap.isNull():
+            banner_label.setPixmap(banner_pixmap)
+            banner_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            layout.addWidget(banner_label)
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        browser.setHtml(html_text)
+        layout.addWidget(browser, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
+
+
+class HistoryDialog(QDialog):
+    def __init__(self, parent: QWidget | None, title: str, entries: list[str]):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowIcon(get_app_icon())
+        self.resize(760, 520)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(True)
+        browser.setReadOnly(True)
+        lines = []
+        for index, entry in enumerate(entries, 1):
+            safe_entry = html.escape(str(entry or ""))
+            lines.append(f"<p style='margin:0 0 8px 0;'><b>{index}.</b> <a href='{safe_entry}'>{safe_entry}</a></p>")
+        browser.setHtml("".join(lines))
+        layout.addWidget(browser, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setWindowIcon(get_app_icon())
         self.settings = QSettings(SETTINGS_ORG, SETTINGS_APP)
         self.lang = self._load_language_setting()
         self.is_dark = self._load_theme_setting()
+        self.last_outdir = self._load_outdir_setting()
+        self.history_limit = self._load_history_limit_setting()
+        self.book_history = self._load_history_setting()
         self.books: list[BookEntry] = []
         self.worker: DownloaderWorker | None = None
-
-        if os.path.exists(ICON_PATH):
-            self.setWindowIcon(QIcon(ICON_PATH))
+        self._syncing_table = False
+        self._last_search_text = ""
 
         self.setWindowTitle(self._t("title"))
         self.resize(1000, 900)
-        self.setMinimumSize(900, 620)
+        self.setMinimumSize(880, 580)
+        self.setFont(APP_FONT)
 
         fusion = QStyleFactory.create("Fusion")
-        if fusion is not None:
+        if fusion:
             self.setStyle(fusion)
 
         self._build_ui()
         self.apply_theme()
         self.retranslate_ui()
-        self._status_message("status_ready")
+        self.statusBar().showMessage(self._t("status_ready"))
 
     def _t(self, key: str) -> str:
-        return LANG[self.lang][key]
+        lang_map = LANG.get(self.lang) or LANG.get("en") or LANG["de"]
+        if key in lang_map:
+            return lang_map[key]
+        if key in LANG.get("en", {}):
+            return LANG["en"][key]
+        return LANG["de"].get(key, key)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -85,28 +187,23 @@ class MainWindow(QMainWindow):
         self.btn_theme.clicked.connect(self.toggle_theme)
         top_bar.addWidget(self.btn_theme)
 
+        self.btn_help = QPushButton("?")
+        self.btn_help.setFixedSize(46, 40)
+        self.btn_help.clicked.connect(self.show_help_dialog)
+        top_bar.addWidget(self.btn_help)
+
         top_bar.addStretch(1)
 
-        self.lang_group = QButtonGroup(self)
-        self.rb_de = QRadioButton("DE")
-        self.rb_en = QRadioButton("EN")
-        self.rb_pl = QRadioButton("PL")
+        self.lbl_language = QLabel()
+        top_bar.addWidget(self.lbl_language)
 
-        for rb, value in ((self.rb_de, "de"), (self.rb_en, "en"), (self.rb_pl, "pl")):
-            self.lang_group.addButton(rb)
-            rb.toggled.connect(lambda checked, v=value: self.on_language_toggled(v, checked))
-            top_bar.addWidget(rb)
-
-        for rb in (self.rb_de, self.rb_en, self.rb_pl):
-            rb.blockSignals(True)
-        if self.lang == "de":
-            self.rb_de.setChecked(True)
-        elif self.lang == "en":
-            self.rb_en.setChecked(True)
-        else:
-            self.rb_pl.setChecked(True)
-        for rb in (self.rb_de, self.rb_en, self.rb_pl):
-            rb.blockSignals(False)
+        self.language_combo = DownwardComboBox()
+        self.language_combo.setMinimumHeight(40)
+        self.language_combo.setMinimumWidth(145)
+        self.language_combo.setMaximumWidth(175)
+        self.language_combo.setMaxVisibleItems(len(SUPPORTED_LANGS))
+        self._build_language_menu()
+        top_bar.addWidget(self.language_combo)
 
         main_layout.addLayout(top_bar)
 
@@ -116,31 +213,57 @@ class MainWindow(QMainWindow):
         input_layout.setVerticalSpacing(10)
 
         self.lbl_url = QLabel()
-        self.url_entry = QLineEdit()
+        self.url_entry = ShortcutLineEdit()
         self.url_entry.setPlaceholderText("https://metryki.genealodzy.pl/…")
+        self.url_entry.setClearButtonEnabled(True)
+        self.history_model = QStringListModel(self.book_history, self)
+        self.url_completer = QCompleter(self.history_model, self)
+        self.url_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self.url_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.url_completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        self.url_completer.setMaxVisibleItems(12)
+        self.url_entry.setCompleter(self.url_completer)
+        self.url_entry.returnPressed.connect(self.add_book)
+        self.url_entry.ctrlReturnPressed.connect(self.on_url_ctrl_return)
+
+        self.btn_history = QPushButton()
+        self.btn_history.setFixedHeight(40)
+        self.btn_history.setMinimumWidth(0)
+        self.btn_history.setMaximumWidth(16777215)
+        self.btn_history.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.history_menu = QMenu(self)
+        self.btn_history.setMenu(self.history_menu)
+
         input_layout.addWidget(self.lbl_url, 0, 0)
-        input_layout.addWidget(self.url_entry, 0, 1, 1, 3)
+        input_layout.addWidget(self.url_entry, 0, 1, 1, 2)
+        input_layout.addWidget(self.btn_history, 0, 3)
 
         self.lbl_outdir = QLabel()
         self.outdir_entry = QLineEdit()
-        last_outdir = str(self.settings.value("ui/last_outdir", "") or "").strip()
-        if last_outdir:
-            self.outdir_entry.setText(last_outdir)
+        self.outdir_entry.setText(self.last_outdir)
+        self.outdir_entry.setClearButtonEnabled(True)
+        self.outdir_entry.editingFinished.connect(self.on_outdir_changed)
         input_layout.addWidget(self.lbl_outdir, 1, 0)
         input_layout.addWidget(self.outdir_entry, 1, 1, 1, 2)
 
         self.btn_choose = QPushButton()
+        self.btn_choose.setFixedHeight(40)
         self.btn_choose.clicked.connect(self.choose_dir)
         input_layout.addWidget(self.btn_choose, 1, 3)
 
         self.lbl_pages = QLabel()
         self.pages_entry = QLineEdit()
+        self.pages_entry.setClearButtonEnabled(True)
         input_layout.addWidget(self.lbl_pages, 2, 0)
         input_layout.addWidget(self.pages_entry, 2, 1)
 
         self.lbl_pages_hint = QLabel()
         self.lbl_pages_hint.setObjectName("hintLabel")
         input_layout.addWidget(self.lbl_pages_hint, 2, 2, 1, 2)
+
+        input_layout.setColumnStretch(1, 2)
+        input_layout.setColumnStretch(2, 2)
+        input_layout.setColumnStretch(3, 1)
 
         main_layout.addWidget(input_group)
 
@@ -177,11 +300,11 @@ class MainWindow(QMainWindow):
         self.btn_export_pdf = QPushButton()
         self.btn_export_pdf.clicked.connect(self.export_pdf)
 
-        self.btn_save_log = QPushButton()
-        self.btn_save_log.clicked.connect(self.save_log_to_file)
-
         self.btn_log_toggle = QPushButton()
         self.btn_log_toggle.clicked.connect(self.toggle_log)
+
+        self.btn_save_log = QPushButton()
+        self.btn_save_log.clicked.connect(self.save_log_to_file)
 
         action_rows = []
         for _ in range(3):
@@ -191,39 +314,41 @@ class MainWindow(QMainWindow):
             main_layout.addLayout(row)
 
         action_rows[0].addStretch(1)
-        for button in (self.btn_add_book, self.btn_delete_book, self.btn_change_pages):
-            button.setMinimumHeight(42)
-            button.setMinimumWidth(185)
-            action_rows[0].addWidget(button)
+        for btn in (self.btn_add_book, self.btn_delete_book, self.btn_change_pages):
+            btn.setMinimumHeight(42)
+            btn.setMinimumWidth(185)
+            action_rows[0].addWidget(btn)
         action_rows[0].addStretch(1)
 
         action_rows[1].addStretch(1)
-        for button in (self.btn_download, self.btn_stop, self.btn_reset):
-            button.setMinimumHeight(42)
-            button.setMinimumWidth(185)
-            action_rows[1].addWidget(button)
+        for btn in (self.btn_download, self.btn_stop, self.btn_reset):
+            btn.setMinimumHeight(42)
+            btn.setMinimumWidth(185)
+            action_rows[1].addWidget(btn)
         action_rows[1].addStretch(1)
 
         action_rows[2].addStretch(1)
-        for button in (self.btn_save_list, self.btn_load_list, self.btn_export_pdf, self.btn_save_log, self.btn_log_toggle):
-            button.setMinimumHeight(40)
-            button.setMinimumWidth(155)
-            action_rows[2].addWidget(button)
+        for btn in (self.btn_save_list, self.btn_load_list, self.btn_export_pdf, self.btn_save_log, self.btn_log_toggle):
+            btn.setMinimumHeight(40)
+            btn.setMinimumWidth(155)
+            action_rows[2].addWidget(btn)
         action_rows[2].addStretch(1)
 
         self.lbl_waiting = QLabel()
         main_layout.addWidget(self.lbl_waiting)
 
         self.table = QTableWidget(0, 3)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
-        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.cellDoubleClicked.connect(self.open_book_url)
+        self.table.cellDoubleClicked.connect(self.on_table_double_clicked)
+        self.table.cellClicked.connect(self.on_table_cell_clicked)
+        self.table.itemChanged.connect(self.on_table_item_changed)
         self.table.setMinimumHeight(320)
         main_layout.addWidget(self.table, 1)
 
@@ -249,14 +374,33 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.log_container)
         self.log_container.hide()
 
-        delete_action = QAction(self)
-        delete_action.setShortcut("Delete")
-        delete_action.triggered.connect(self.delete_book)
-        self.addAction(delete_action)
-
         self.statusbar = QStatusBar()
         self.setStatusBar(self.statusbar)
-        self.btn_stop.setEnabled(False)
+
+        self._build_history_menu()
+        self._init_shortcuts()
+
+    def _build_language_menu(self) -> None:
+        self.language_combo.blockSignals(True)
+        self.language_combo.clear()
+        for code in SUPPORTED_LANGS:
+            self.language_combo.addItem(LANGUAGE_LABELS.get(code, code.upper()), code)
+        self.language_combo.currentIndexChanged.connect(self.on_language_combo_changed)
+        self._refresh_language_button_text()
+        self.language_combo.blockSignals(False)
+
+    def _refresh_language_button_text(self) -> None:
+        index = self.language_combo.findData(self.lang)
+        if index >= 0:
+            self.language_combo.setCurrentIndex(index)
+
+    @pyqtSlot(int)
+    def on_language_combo_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        code = str(self.language_combo.itemData(index) or "").strip().lower()
+        if code:
+            self.set_language(code)
 
     def _load_theme_setting(self) -> bool:
         value = self.settings.value("ui/is_dark", False)
@@ -269,15 +413,192 @@ class MainWindow(QMainWindow):
 
     def _load_language_setting(self) -> str:
         value = str(self.settings.value("ui/lang", "de") or "de").strip().lower()
+        if value == "cs":
+            value = "cz"
         return value if value in LANG else "de"
 
     def _save_language_setting(self) -> None:
         self.settings.setValue("ui/lang", self.lang)
 
+    def _load_outdir_setting(self) -> str:
+        value = str(self.settings.value("ui/last_outdir", os.getcwd()) or os.getcwd()).strip()
+        return value or os.getcwd()
+
+    def _save_outdir_setting(self, outdir: str | None = None) -> None:
+        selected_outdir = (outdir or self.outdir_entry.text().strip() or os.getcwd()).strip()
+        self.last_outdir = selected_outdir
+        self.settings.setValue("ui/last_outdir", selected_outdir)
+
+    def _load_history_limit_setting(self) -> int:
+        value = self.settings.value("history/max_entries", 200)
+        try:
+            limit = int(value)
+        except (TypeError, ValueError):
+            limit = 200
+        return max(1, min(limit, 100000))
+
+    def _save_history_limit_setting(self) -> None:
+        self.settings.setValue("history/max_entries", int(self.history_limit))
+
+    def _load_history_setting(self) -> list[str]:
+        value = self.settings.value("history/book_urls", [])
+        if isinstance(value, list):
+            raw_values = value
+        elif isinstance(value, tuple):
+            raw_values = list(value)
+        elif isinstance(value, str):
+            text = value.strip()
+            if not text:
+                raw_values = []
+            elif text.startswith("[") and text.endswith("]"):
+                try:
+                    raw_values = json.loads(text)
+                except Exception:
+                    raw_values = [text]
+            else:
+                raw_values = [text]
+        else:
+            raw_values = []
+
+        history: list[str] = []
+        seen: set[str] = set()
+        for entry in raw_values:
+            url = str(entry or "").strip()
+            if not url:
+                continue
+            normalized = self._normalized_book_url(url)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            history.append(url)
+        return history[: self.history_limit]
+
+    def _save_history_setting(self) -> None:
+        self.settings.setValue("history/book_urls", self.book_history[: self.history_limit])
+
+    def _add_history_url(self, url: str) -> None:
+        url = str(url or "").strip()
+        if not url:
+            return
+
+        normalized = self._normalized_book_url(url)
+        updated = [url]
+        for existing in self.book_history:
+            if self._normalized_book_url(existing) != normalized:
+                updated.append(existing)
+
+        self.book_history = updated[: self.history_limit]
+        self._refresh_history_model()
+        self._save_history_setting()
+
+    def _refresh_history_model(self) -> None:
+        self.history_model.setStringList(self.book_history)
+        self._build_history_menu()
+        if hasattr(self, "btn_history"):
+            self.btn_history.setToolTip(
+                self._t("history_button_tooltip")
+                + "\n"
+                + self._t("history_count_tooltip").format(count=len(self.book_history), limit=self.history_limit)
+            )
+
+    def _build_history_menu(self) -> None:
+        if not hasattr(self, "history_menu"):
+            return
+
+        self.history_menu.clear()
+
+        info_action = self.history_menu.addAction(
+            self._t("history_count_tooltip").format(count=len(self.book_history), limit=self.history_limit)
+        )
+        info_action.setEnabled(False)
+
+        self.history_menu.addSeparator()
+
+        limit_menu = self.history_menu.addMenu(self._t("history_limit_menu"))
+        limit_group = QActionGroup(self)
+        limit_group.setExclusive(True)
+
+        for value in (50, 100, 200):
+            action = limit_menu.addAction(str(value))
+            action.setCheckable(True)
+            action.setChecked(self.history_limit == value)
+            action.triggered.connect(lambda checked=False, v=value: self.set_history_limit(v))
+            limit_group.addAction(action)
+
+        limit_menu.addSeparator()
+        custom_label = self._t("history_limit_custom")
+        if self.history_limit not in (50, 100, 200):
+            custom_label = f"{custom_label} ({self.history_limit})"
+        custom_action = limit_menu.addAction(custom_label)
+        custom_action.triggered.connect(self.prompt_custom_history_limit)
+
+        show_action = self.history_menu.addAction(self._t("history_show"))
+        show_action.setEnabled(bool(self.book_history))
+        show_action.triggered.connect(self.show_history_dialog)
+
+        self.history_menu.addSeparator()
+        clear_action = self.history_menu.addAction(self._t("history_clear"))
+        clear_action.setEnabled(bool(self.book_history))
+        clear_action.triggered.connect(self.clear_history)
+
+    @pyqtSlot()
+    def show_history_dialog(self) -> None:
+        if not self.book_history:
+            QMessageBox.information(self, self._t("title"), self._t("history_empty"))
+            return
+
+        dialog = HistoryDialog(self, self._t("history_dialog_title"), self.book_history)
+        dialog.exec()
+
+    @pyqtSlot()
+    def clear_history(self) -> None:
+        self.book_history = []
+        self._refresh_history_model()
+        self._save_history_setting()
+        self.log(f"[*] {self._t('history_cleared')}")
+        self.statusBar().showMessage(self._t("history_cleared"), 3000)
+
+    def set_history_limit(self, limit: int) -> None:
+        limit = max(1, min(int(limit), 100000))
+        if limit == self.history_limit:
+            self._build_history_menu()
+            return
+
+        self.history_limit = limit
+        self.book_history = self.book_history[: self.history_limit]
+        self._save_history_limit_setting()
+        self._refresh_history_model()
+        self._save_history_setting()
+        msg = self._t("history_limit_set").format(limit=self.history_limit)
+        self.log(f"[⚙️] {msg}")
+        self.statusBar().showMessage(msg, 3000)
+
+    @pyqtSlot()
+    def prompt_custom_history_limit(self) -> None:
+        value, ok = QInputDialog.getInt(
+            self,
+            self._t("history_limit_prompt_title"),
+            self._t("history_limit_prompt_label"),
+            value=self.history_limit,
+            min=1,
+            max=100000,
+            step=1,
+        )
+        if ok:
+            self.set_history_limit(value)
+
     def apply_theme(self) -> None:
         self.setStyleSheet(dark_stylesheet() if self.is_dark else light_stylesheet())
         self.btn_theme.setText("☀️" if self.is_dark else "🪩")
         self.btn_theme.setToolTip(self._t("theme_light") if self.is_dark else self._t("theme_dark"))
+
+    def set_language(self, lang: str) -> None:
+        lang = str(lang or "de").strip().lower()
+        if not lang or lang == self.lang:
+            return
+        self.lang = lang
+        self._save_language_setting()
+        self.retranslate_ui()
 
     @pyqtSlot()
     def toggle_theme(self) -> None:
@@ -289,16 +610,21 @@ class MainWindow(QMainWindow):
     def open_home(self) -> None:
         QDesktopServices.openUrl(QUrl(APP_HOME_URL))
 
-    @pyqtSlot(str, bool)
-    def on_language_toggled(self, lang: str, checked: bool) -> None:
-        if checked:
-            self.lang = lang
-            self._save_language_setting()
-            self.retranslate_ui()
+    @pyqtSlot()
+    def on_outdir_changed(self) -> None:
+        self._save_outdir_setting()
+
+    @pyqtSlot()
+    def on_url_ctrl_return(self) -> None:
+        if self.url_entry.text().strip():
+            self.add_book()
+        self.start_books()
 
     def retranslate_ui(self) -> None:
         self.setWindowTitle(self._t("title"))
         self.btn_home.setText(self._t("home"))
+        self.btn_help.setToolTip(self._t("help_button_tooltip"))
+        self.btn_history.setText(self._t("history_button"))
         self.btn_add_book.setText(self._t("add_book"))
         self.btn_delete_book.setText(self._t("delete_book"))
         self.btn_change_pages.setText(self._t("change_pages"))
@@ -308,17 +634,21 @@ class MainWindow(QMainWindow):
         self.btn_save_list.setText(self._t("save_list"))
         self.btn_load_list.setText(self._t("load_list"))
         self.btn_export_pdf.setText(self._t("export_pdf"))
-        self.btn_save_log.setText(self._t("save_log"))
-        self.btn_log_toggle.setText(self._t("hide_log") if self.log_container.isVisible() else self._t("show_log"))
+        self.btn_save_log.setText(self._t("log_save"))
         self.btn_choose.setText(self._t("choose_dir"))
         self.lbl_url.setText(self._t("book_url"))
         self.lbl_outdir.setText(self._t("target_dir"))
         self.lbl_pages.setText(self._t("pages"))
         self.lbl_pages_hint.setText(self._t("pages_hint"))
+        self.lbl_pages_hint.setToolTip(self._t("hint_pages_editable"))
         self.lbl_waiting.setText(self._t("waiting_list"))
+        self.lbl_language.setText(self._t("language"))
         self.lbl_progress.setText(self._t("global_progress"))
-        self.table.setHorizontalHeaderLabels([self._t("col_url"), self._t("col_pages"), self._t("col_status")])
+        self.table.setHorizontalHeaderLabels([self._t("col_book"), self._t("col_pages"), self._t("col_status")])
         self.log_container.setTitle(self._t("log_title"))
+        self.btn_log_toggle.setText(self._t("log_close") if self.log_container.isVisible() else self._t("log_open"))
+        self._refresh_language_button_text()
+        self._refresh_history_model()
         self.apply_theme()
 
     def _status_message(self, key: str) -> None:
@@ -328,6 +658,135 @@ class MainWindow(QMainWindow):
         line = f"{datetime.now().strftime('%H:%M:%S')} {msg}"
         self.log_text.append(line)
 
+    def _normalized_book_url(self, url: str) -> str:
+        parsed = urlparse(str(url or "").strip())
+        query_items = [
+            (key.lower(), value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key.lower() != "language"
+        ]
+        query = urlencode(sorted(query_items), doseq=True)
+        path = parsed.path.rstrip("/") or "/"
+        return urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), path, parsed.params, query, ""))
+
+    def _book_already_exists(self, url: str) -> bool:
+        normalized = self._normalized_book_url(url)
+        return any(self._normalized_book_url(book.url) == normalized for book in self.books)
+
+    def _help_html(self) -> str:
+        def esc(value: str) -> str:
+            return html.escape(str(value or ""))
+
+        version_display = str(APP_VERSION).split()[0]
+        ctrl = self._t("shortcut_ctrl")
+        book_url_label = self._t("book_url").rstrip(":")
+
+        github_link = (
+            f'<a href="{esc(APP_GITHUB_URL)}">{esc(APP_GITHUB_URL)}</a>'
+            if str(APP_GITHUB_URL).strip()
+            else "-"
+        )
+
+        shortcuts = [
+            ("F1", self._t("help_sc_f1")),
+            (f"{ctrl} + S", self._t("help_sc_save_list")),
+            (f"{ctrl} + D", self._t("help_sc_load_list")),
+            (f"{ctrl} + X", self._t("help_sc_clear_queue")),
+            (f"{ctrl} + F", self._t("help_sc_search_queue")),
+            (f"{ctrl} + Q", self._t("help_sc_quit")),
+            (f"{ctrl} + H", self._t("help_sc_toggle_theme")),
+            (self._t("shortcut_delete"), self._t("help_sc_delete_selected")),
+            (f"{ctrl} + L", self._t("help_sc_save_log")),
+            (f"Enter ({book_url_label})", self._t("help_sc_add_book")),
+            (f"{ctrl} + Enter", self._t("help_sc_start_download")),
+        ]
+
+        shortcuts_html = "".join(
+            f"<tr><td style='padding:4px 10px 4px 0;'><b>{esc(key)}</b></td><td style='padding:4px 0;'>{esc(text)}</td></tr>"
+            for key, text in shortcuts
+        )
+
+        return f"""
+        <h3>{esc(self._t('help_about'))}</h3>
+        <p style='margin-top:0;'>{esc(self._t('help_description'))}</p>
+        <p>
+            <b>{esc(self._t('help_author'))}:</b> {esc(APP_AUTHOR)}<br>
+            <b>{esc(self._t('help_source'))}:</b> {github_link}<br>
+            <b>{esc(self._t('help_version'))}:</b> {esc(version_display)}
+        </p>
+        <h3>{esc(self._t('help_shortcuts'))}</h3>
+        <table cellspacing='0' cellpadding='0'>{shortcuts_html}</table>
+        """
+
+    def _selected_rows(self) -> list[int]:
+        selection_model = self.table.selectionModel()
+        if not selection_model:
+            return []
+        return sorted({index.row() for index in selection_model.selectedRows()})
+
+    def _init_shortcuts(self) -> None:
+        self._shortcut_actions: list[QAction] = []
+
+        def add_shortcut(shortcut: str | QKeySequence, callback) -> None:
+            action = QAction(self)
+            action.setShortcut(shortcut)
+            action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+            action.triggered.connect(callback)
+            self.addAction(action)
+            self._shortcut_actions.append(action)
+
+        add_shortcut("F1", self.show_help_dialog)
+        add_shortcut("Ctrl+S", self.save_list)
+        add_shortcut("Ctrl+D", self.load_list)
+        add_shortcut("Ctrl+X", self.reset_books)
+        add_shortcut("Ctrl+F", self.find_in_waiting_list)
+        add_shortcut("Ctrl+Q", self.close)
+        add_shortcut("Ctrl+H", self.toggle_theme)
+        add_shortcut("Delete", self.delete_book)
+        add_shortcut("Ctrl+L", self.save_log_to_file)
+        add_shortcut("Ctrl+Return", self.start_books)
+        add_shortcut("Ctrl+Enter", self.start_books)
+
+    @pyqtSlot()
+    def show_help_dialog(self) -> None:
+        dialog = HelpDialog(self, self._t("help_title"), self._help_html())
+        dialog.exec()
+
+    @pyqtSlot()
+    def find_in_waiting_list(self) -> None:
+        if not self.books:
+            QMessageBox.warning(self, self._t("title"), self._t("error_no_book"))
+            return
+
+        text, ok = QInputDialog.getText(
+            self,
+            self._t("search_title"),
+            self._t("search_label"),
+            text=self._last_search_text,
+        )
+        if not ok:
+            return
+
+        needle = text.strip().lower()
+        if not needle:
+            return
+
+        self._last_search_text = text.strip()
+        start_row = self.table.currentRow() + 1 if self.table.currentRow() >= 0 else 0
+        row_count = self.table.rowCount()
+        matches = list(range(start_row, row_count)) + list(range(0, start_row))
+
+        for row in matches:
+            item = self.table.item(row, 0)
+            if item and needle in item.text().lower():
+                self.table.setCurrentCell(row, 0)
+                self.table.selectRow(row)
+                self.table.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtCenter)
+                self.statusBar().showMessage(self._t("search_found"), 3000)
+                return
+
+        QMessageBox.information(self, self._t("title"), self._t("search_not_found"))
+
     @pyqtSlot()
     def save_log_to_file(self) -> None:
         content = self.log_text.toPlainText().strip()
@@ -336,7 +795,7 @@ class MainWindow(QMainWindow):
             return
 
         default_name = os.path.join(os.getcwd(), self._t("save_log_default"))
-        path, _ = QFileDialog.getSaveFileName(self, self._t("save_log"), default_name, "Text (*.txt)")
+        path, _ = QFileDialog.getSaveFileName(self, self._t("log_save"), default_name, self._t("filter_text"))
         if not path:
             return
 
@@ -351,33 +810,40 @@ class MainWindow(QMainWindow):
     def toggle_log(self) -> None:
         visible = not self.log_container.isVisible()
         self.log_container.setVisible(visible)
-        self.btn_log_toggle.setText(self._t("hide_log") if visible else self._t("show_log"))
+        self.btn_log_toggle.setText(self._t("log_close") if visible else self._t("log_open"))
 
     @pyqtSlot()
     def choose_dir(self) -> None:
-        start_dir = self.outdir_entry.text().strip() or os.getcwd()
+        start_dir = self.outdir_entry.text().strip() or self.last_outdir or os.getcwd()
         selected = QFileDialog.getExistingDirectory(self, self._t("choose_dir"), start_dir)
         if selected:
             self.outdir_entry.setText(selected)
-            self.settings.setValue("ui/last_outdir", selected)
+            self._save_outdir_setting(selected)
+            self.log(f"[📂] {self._t('target_dir_saved')}: {selected}")
 
     @pyqtSlot()
     def add_book(self) -> None:
         url = self.url_entry.text().strip()
-        outdir = self.outdir_entry.text().strip() or str(self.settings.value("ui/last_outdir", "") or "").strip() or os.getcwd()
+        outdir = self.outdir_entry.text().strip() or self.last_outdir or os.getcwd()
         pages = self.pages_entry.text().strip()
 
         if not url:
             QMessageBox.warning(self, self._t("title"), self._t("error_no_url"))
             return
-        if not os.path.isdir(outdir):
-            QMessageBox.warning(self, self._t("title"), self._t("error_no_outdir"))
+
+        if self._book_already_exists(url):
+            QMessageBox.information(self, self._t("title"), self._t("error_duplicate_book"))
+            self.log(f"[=] {self._t('error_duplicate_book')} {url}")
             return
+
+        self._save_outdir_setting(outdir)
+        self.outdir_entry.setText(outdir)
+        self._add_history_url(url)
 
         book = BookEntry(url=url, outdir=outdir, pages=pages)
         self.books.append(book)
         self._append_table_row(book)
-        self.log(f"[+] URL hinzugefügt: {url}")
+        self.log(f"[+] {self._t('log_book_added')}: {url}")
 
         self.url_entry.clear()
         self.pages_entry.clear()
@@ -385,35 +851,39 @@ class MainWindow(QMainWindow):
 
     def _append_table_row(self, book: BookEntry) -> None:
         row = self.table.rowCount()
+        self._syncing_table = True
         self.table.insertRow(row)
 
         url_item = QTableWidgetItem(book.url)
-        pages_item = QTableWidgetItem(book.pages or "ALL")
+        pages_item = QTableWidgetItem(book.pages)
         status_item = QTableWidgetItem("⏳")
 
-        pages_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-        status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+        pages_item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
+        status_item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
 
         self.table.setItem(row, 0, url_item)
         self.table.setItem(row, 1, pages_item)
         self.table.setItem(row, 2, status_item)
+        self._syncing_table = False
 
     @pyqtSlot()
     def delete_book(self) -> None:
-        selected = sorted({index.row() for index in self.table.selectionModel().selectedRows()}, reverse=True)
+        selected = sorted(self._selected_rows(), reverse=True)
         if not selected:
             QMessageBox.warning(self, self._t("title"), self._t("error_no_selection"))
             return
 
+        self._syncing_table = True
         for row in selected:
             del self.books[row]
             self.table.removeRow(row)
+        self._syncing_table = False
 
-        self.log("[-] Eintrag gelöscht.")
+        self.log(f"[-] {self._t('log_book_deleted')}")
 
     @pyqtSlot()
     def change_pages(self) -> None:
-        selected = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        selected = self._selected_rows()
         if not selected:
             QMessageBox.warning(self, self._t("title"), self._t("error_no_selection"))
             return
@@ -429,14 +899,47 @@ class MainWindow(QMainWindow):
         if ok:
             pages = pages.strip()
             self.books[row].pages = pages
-            self.table.item(row, 1).setText(pages or "ALL")
-            self.log(f"[~] Seiten geändert: {self.books[row].url} -> {pages or 'ALL'}")
+            self._syncing_table = True
+            if self.table.item(row, 1):
+                self.table.item(row, 1).setText(pages)
+            self._syncing_table = False
+            self.log(f"[~] {self._t('pages_updated')} {self.books[row].url} -> {pages}")
 
     @pyqtSlot(int, int)
-    def open_book_url(self, row: int, _column: int) -> None:
-        item = self.table.item(row, 0)
-        if item and item.text():
-            QDesktopServices.openUrl(QUrl(item.text()))
+    def on_table_double_clicked(self, row: int, column: int) -> None:
+        if column == 0:
+            item = self.table.item(row, 0)
+            if item and item.text():
+                QDesktopServices.openUrl(QUrl(item.text()))
+        elif column == 1 and not (self.worker and self.worker.isRunning()):
+            item = self.table.item(row, 1)
+            if item:
+                self.table.editItem(item)
+
+    @pyqtSlot(int, int)
+    def on_table_cell_clicked(self, row: int, column: int) -> None:
+        if column == 1 and not (self.worker and self.worker.isRunning()):
+            item = self.table.item(row, 1)
+            if item:
+                self.table.editItem(item)
+
+    @pyqtSlot(QTableWidgetItem)
+    def on_table_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._syncing_table or item.column() != 1:
+            return
+
+        row = item.row()
+        if row < 0 or row >= len(self.books):
+            return
+
+        pages = item.text().strip()
+        if item.text() != pages:
+            self._syncing_table = True
+            item.setText(pages)
+            self._syncing_table = False
+
+        self.books[row].pages = pages
+        self.log(f"[~] {self._t('pages_updated')} {self.books[row].url} -> {pages}")
 
     @pyqtSlot()
     def reset_books(self) -> None:
@@ -445,10 +948,12 @@ class MainWindow(QMainWindow):
             return
 
         self.books.clear()
+        self._syncing_table = True
         self.table.setRowCount(0)
+        self._syncing_table = False
         self.progress_bar.setValue(0)
         self.progress_label.setText("0%")
-        self.log("[*] Warteliste zurückgesetzt.")
+        self.log(f"[*] {self._t('log_queue_cleared')}")
 
     @pyqtSlot()
     def save_list(self) -> None:
@@ -456,78 +961,95 @@ class MainWindow(QMainWindow):
             return
 
         default_name = os.path.join(os.getcwd(), self._t("save_list_default"))
-        path, _ = QFileDialog.getSaveFileName(self, self._t("save_list"), default_name, "JSON (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, self._t("save_list"), default_name, self._t("filter_json"))
         if not path:
             return
 
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump([book.to_dict() for book in self.books], handle, indent=2, ensure_ascii=False)
-
-        self.log(f"[💾] Warteliste gespeichert: {path}")
-
-    @pyqtSlot()
-    def load_list(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, self._t("load_list"), os.getcwd(), "JSON (*.json)")
-        if not path:
-            return
-
-        with open(path, "r", encoding="utf-8") as handle:
-            raw_books = json.load(handle)
-
-        self.books = [BookEntry.from_dict(item) for item in raw_books]
-        self.table.setRowCount(0)
-        for book in self.books:
-            self._append_table_row(book)
-
-        self.log(f"[📂] Warteliste geladen: {path}")
-
-    @pyqtSlot()
-    def export_pdf(self) -> None:
         try:
-            from PIL import Image
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump([book.to_dict() for book in self.books], handle, indent=2, ensure_ascii=False)
         except Exception as exc:
             QMessageBox.critical(self, self._t("title"), str(exc))
             return
 
-        unique_outdirs = sorted({book.outdir for book in self.books if book.outdir and os.path.isdir(book.outdir)})
-        if not unique_outdirs:
-            QMessageBox.information(self, self._t("title"), self._t("pdf_none"))
+        self.log(f"[💾] {self._t('log_list_saved')}: {path}")
+
+    @pyqtSlot()
+    def load_list(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, self._t("load_list"), os.getcwd(), self._t("filter_json"))
+        if not path:
             return
 
-        pdf_count = 0
-        for outdir in unique_outdirs:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                raw_books = json.load(handle)
+        except Exception as exc:
+            QMessageBox.critical(self, self._t("title"), str(exc))
+            return
+
+        self.books = [BookEntry.from_dict(book) for book in raw_books]
+        self._syncing_table = True
+        self.table.setRowCount(0)
+        for book in self.books:
+            self._append_table_row(book)
+            self._add_history_url(book.url)
+        self._syncing_table = False
+
+        if self.books:
+            self.outdir_entry.setText(self.books[-1].outdir)
+            self._save_outdir_setting(self.books[-1].outdir)
+
+        self.log(f"[📂] {self._t('log_list_loaded')}: {path}")
+
+    @pyqtSlot()
+    def export_pdf(self) -> None:
+        if not self.books:
+            QMessageBox.warning(self, self._t("title"), self._t("pdf_error_no_books"))
+            return
+
+        if not HAVE_REPORTLAB or A4 is None or canvas is None:
+            QMessageBox.critical(self, self._t("title"), self._t("pdf_error_lib"))
+            return
+
+        try:
+            from PIL import Image
+        except Exception:
+            QMessageBox.critical(self, self._t("title"), self._t("pdf_error_pillow"))
+            return
+
+        for book in self.books:
+            outdir = book.outdir
+            if not outdir or not os.path.isdir(outdir):
+                continue
+
             for root, _dirs, files in os.walk(outdir):
-                jpg_files = sorted(
-                    os.path.join(root, filename)
-                    for filename in files
-                    if filename.lower().endswith(".jpg")
-                )
-                if not jpg_files:
-                    continue
-
-                images = []
-                for image_path in jpg_files:
-                    try:
-                        with Image.open(image_path) as img:
-                            images.append(img.convert("RGB"))
-                    except Exception as exc:
-                        self.log(f"[!] PDF Fehler bei {image_path}: {exc}")
-
+                images = sorted([f for f in files if f.lower().endswith(".jpg")])
                 if not images:
                     continue
 
-                pdf_path = os.path.join(root, f"{os.path.basename(root)}.pdf")
-                try:
-                    images[0].save(pdf_path, save_all=True, append_images=images[1:])
-                    pdf_count += 1
-                    self.log(f"[📄] PDF erzeugt: {pdf_path}")
-                except Exception as exc:
-                    self.log(f"[!] PDF Fehler: {exc}")
-                finally:
-                    for image in images:
-                        image.close()
+                pdf_path = os.path.join(root, os.path.basename(root) + ".pdf")
+                pdf_canvas = canvas.Canvas(pdf_path, pagesize=A4)
+                pdf_w, pdf_h = A4
 
-        QMessageBox.information(self, self._t("title"), self._t("pdf_done") if pdf_count else self._t("pdf_none"))
+                for image_name in images:
+                    img_path = os.path.join(root, image_name)
+                    try:
+                        with Image.open(img_path) as im:
+                            img_w, img_h = im.size
+                            scale = min(pdf_w / img_w, pdf_h / img_h)
+                            new_w = img_w * scale
+                            new_h = img_h * scale
+                            x = (pdf_w - new_w) / 2
+                            y = (pdf_h - new_h) / 2
+                            pdf_canvas.drawImage(img_path, x, y, width=new_w, height=new_h, preserveAspectRatio=True)
+                            pdf_canvas.showPage()
+                    except Exception as exc:
+                        self.log(f"[!] {self._t('log_pdf_error')} {image_name}: {exc}")
+
+                pdf_canvas.save()
+                self.log(f"[📄] {self._t('log_pdf_exported')}: {pdf_path}")
+
+        QMessageBox.information(self, self._t("title"), self._t("pdf_saved"))
 
     def _set_running_state(self, running: bool) -> None:
         self.btn_add_book.setEnabled(not running)
@@ -540,9 +1062,11 @@ class MainWindow(QMainWindow):
         self.btn_export_pdf.setEnabled(not running)
         self.btn_save_log.setEnabled(not running)
         self.btn_choose.setEnabled(not running)
+        self.btn_history.setEnabled(not running)
         self.url_entry.setEnabled(not running)
         self.outdir_entry.setEnabled(not running)
         self.pages_entry.setEnabled(not running)
+        self.language_combo.setEnabled(not running)
         self.btn_stop.setEnabled(running)
 
     @pyqtSlot()
@@ -558,11 +1082,15 @@ class MainWindow(QMainWindow):
         self.progress_label.setText("0%")
         self._set_running_state(True)
 
+        self._syncing_table = True
         for row in range(self.table.rowCount()):
-            self.table.item(row, 2).setText("⏳")
+            if self.table.item(row, 2):
+                self.table.item(row, 2).setText("⏳")
+        self._syncing_table = False
 
         self.worker = DownloaderWorker(
             books=[BookEntry(url=book.url, outdir=book.outdir, pages=book.pages) for book in self.books],
+            ui_lang=self.lang,
             parent=self,
         )
         self.worker.log_message.connect(self.log)
@@ -583,7 +1111,9 @@ class MainWindow(QMainWindow):
     def update_book_status(self, row: int, value: str) -> None:
         item = self.table.item(row, 2)
         if item:
+            self._syncing_table = True
             item.setText(value)
+            self._syncing_table = False
 
     @pyqtSlot(float)
     def update_global_progress(self, value: float) -> None:
@@ -600,6 +1130,9 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._save_theme_setting()
         self._save_language_setting()
+        self._save_outdir_setting()
+        self._save_history_limit_setting()
+        self._save_history_setting()
         if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(2000)
